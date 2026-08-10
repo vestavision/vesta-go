@@ -28,6 +28,15 @@ func TestClientListAndSubmit(t *testing.T) {
 	mux.HandleFunc("/api/v1/requests/req_1", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "req_1", "status": "completed", "output": map[string]any{"ok": true}})
 	})
+	mux.HandleFunc("/api/v1/requests", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/requests" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"requests": []map[string]any{
+			{"request_id": "req_1", "status": "completed"},
+		}})
+	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -44,6 +53,17 @@ func TestClientListAndSubmit(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	snap, err := client.View(context.Background(), req.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Status != "completed" {
+		t.Fatalf("view status=%s", snap.Status)
+	}
+	list, err := client.ListRequests(context.Background())
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list=%v err=%v", list, err)
 	}
 	done, err := client.Wait(context.Background(), req.RequestID, 10*time.Millisecond, time.Second)
 	if err != nil {

@@ -133,6 +133,21 @@ func (c *Client) GetRequest(ctx context.Context, requestID string) (*Request, er
 	return &out, nil
 }
 
+// View returns the current job snapshot (status, output, error) without waiting.
+func (c *Client) View(ctx context.Context, requestID string) (*Request, error) {
+	return c.GetRequest(ctx, requestID)
+}
+
+func (c *Client) ListRequests(ctx context.Context) ([]Request, error) {
+	var out struct {
+		Requests []Request `json:"requests"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/requests", nil, "", &out); err != nil {
+		return nil, err
+	}
+	return out.Requests, nil
+}
+
 func (c *Client) Cancel(ctx context.Context, requestID string) (*Request, error) {
 	var out Request
 	if err := c.do(ctx, http.MethodDelete, "/api/v1/requests/"+url.PathEscape(requestID), nil, "", &out); err != nil {
@@ -162,7 +177,7 @@ func (c *Client) PresignUpload(ctx context.Context, contentType string) (map[str
 	return out, nil
 }
 
-// Wait polls GetRequest until a terminal status or timeout.
+// Wait polls View until a terminal status or timeout.
 func (c *Client) Wait(ctx context.Context, requestID string, interval, timeout time.Duration) (*Request, error) {
 	if interval <= 0 {
 		interval = 2 * time.Second
@@ -172,7 +187,7 @@ func (c *Client) Wait(ctx context.Context, requestID string, interval, timeout t
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		req, err := c.GetRequest(ctx, requestID)
+		req, err := c.View(ctx, requestID)
 		if err != nil {
 			return nil, err
 		}

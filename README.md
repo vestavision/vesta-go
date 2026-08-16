@@ -39,4 +39,6 @@ Default base URL: `https://api.vestavision.io`. Override with `vesta.WithBaseURL
 
 Auth header: `Authorization: Key vh_…`
 
-OpenAPI: Vestavision Hub docs (`model-api.v1.yaml`).
+OpenAPI types/HTTP: package `generated/` (OpenAPI Generator). Public façade: `vesta` (`Wait`, `VerifyWebhookSignature`, `Key` auth).
+
+Regenerate from the Hub monorepo: `make sdk` (Docker). Spec: [`docs/openapi/model-api.v1.yaml`](../../docs/openapi/model-api.v1.yaml). Drift check: `make sdk-check`.

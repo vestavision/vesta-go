@@ -1,51 +1,60 @@
 package vesta
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
+
+	"github.com/vestavision/vesta-go/generated"
 )
 
 const DefaultBaseURL = "https://api.vestavision.io"
 
 type Client struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
+	api    *generated.APIClient
+	cfg    *generated.Configuration
+	apiKey string
 }
 
 type Option func(*Client)
 
 func WithBaseURL(base string) Option {
 	return func(c *Client) {
-		c.baseURL = strings.TrimRight(strings.TrimSpace(base), "/")
+		base = strings.TrimRight(strings.TrimSpace(base), "/")
+		if base == "" {
+			return
+		}
+		c.cfg.Servers = generated.ServerConfigurations{{URL: base}}
 	}
 }
 
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) {
 		if hc != nil {
-			c.httpClient = hc
+			c.cfg.HTTPClient = hc
 		}
 	}
 }
 
 func NewClient(apiKey string, opts ...Option) *Client {
-	c := &Client{
-		baseURL:    DefaultBaseURL,
-		apiKey:     strings.TrimSpace(apiKey),
-		httpClient: &http.Client{Timeout: 60 * time.Second},
-	}
+	cfg := generated.NewConfiguration()
+	cfg.Servers = generated.ServerConfigurations{{URL: DefaultBaseURL}}
+	cfg.HTTPClient = &http.Client{Timeout: 60 * time.Second}
+	c := &Client{cfg: cfg, apiKey: strings.TrimSpace(apiKey)}
 	for _, opt := range opts {
 		opt(c)
 	}
+	c.api = generated.NewAPIClient(c.cfg)
 	return c
+}
+
+func (c *Client) auth(ctx context.Context) context.Context {
+	return context.WithValue(ctx, generated.ContextAPIKeys, map[string]generated.APIKey{
+		"ApiKeyAuth": {Prefix: "Key", Key: c.apiKey},
+	})
 }
 
 type APIError struct {
@@ -95,41 +104,62 @@ type Credits struct {
 }
 
 func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
-	var out struct {
-		Models []Model `json:"models"`
+	if c.apiKey == "" {
+		return nil, &APIError{Status: 401, Code: "unauthorized", Message: "api key required"}
 	}
-	if err := c.do(ctx, http.MethodGet, "/api/v1/models", nil, "", &out); err != nil {
-		return nil, err
+	list, _, err := c.api.ModelsAPI.ListModels(c.auth(ctx)).Execute()
+	if err != nil {
+		return nil, mapAPIError(err)
 	}
-	return out.Models, nil
+	out := make([]Model, 0, len(list.Models))
+	for _, m := range list.Models {
+		out = append(out, modelFromGenerated(m))
+	}
+	return out, nil
 }
 
 func (c *Client) GetModel(ctx context.Context, modelID string) (*Model, error) {
-	var out Model
-	if err := c.do(ctx, http.MethodGet, "/api/v1/models/"+escapeModelID(modelID), nil, "", &out); err != nil {
-		return nil, err
+	if c.apiKey == "" {
+		return nil, &APIError{Status: 401, Code: "unauthorized", Message: "api key required"}
 	}
+	m, _, err := c.api.ModelsAPI.GetModel(c.auth(ctx), modelID).Execute()
+	if err != nil {
+		return nil, mapAPIError(err)
+	}
+	out := modelFromGenerated(*m)
 	return &out, nil
 }
 
 func (c *Client) Submit(ctx context.Context, modelID string, opts SubmitOptions) (*Request, error) {
-	body := map[string]any{
-		"input":       opts.Input,
-		"webhook_url": opts.WebhookURL,
-		"sync":        opts.Sync,
+	if c.apiKey == "" {
+		return nil, &APIError{Status: 401, Code: "unauthorized", Message: "api key required"}
 	}
-	var out Request
-	if err := c.do(ctx, http.MethodPost, "/api/v1/models/"+escapeModelID(modelID), body, opts.IdempotencyKey, &out); err != nil {
-		return nil, err
+	body := generated.NewSubmitBody(opts.Input)
+	if opts.WebhookURL != "" {
+		body.SetWebhookUrl(opts.WebhookURL)
 	}
+	body.SetSync(opts.Sync)
+	req := c.api.ModelsAPI.SubmitModel(c.auth(ctx), modelID).SubmitBody(*body)
+	if opts.IdempotencyKey != "" {
+		req = req.IdempotencyKey(opts.IdempotencyKey)
+	}
+	raw, _, err := req.Execute()
+	if err != nil {
+		return nil, mapAPIError(err)
+	}
+	out := requestFromGenerated(raw)
 	return &out, nil
 }
 
 func (c *Client) GetRequest(ctx context.Context, requestID string) (*Request, error) {
-	var out Request
-	if err := c.do(ctx, http.MethodGet, "/api/v1/requests/"+url.PathEscape(requestID), nil, "", &out); err != nil {
-		return nil, err
+	if c.apiKey == "" {
+		return nil, &APIError{Status: 401, Code: "unauthorized", Message: "api key required"}
 	}
+	raw, _, err := c.api.RequestsAPI.GetRequest(c.auth(ctx), requestID).Execute()
+	if err != nil {
+		return nil, mapAPIError(err)
+	}
+	out := requestFromGenerated(raw)
 	return &out, nil
 }
 
@@ -139,42 +169,68 @@ func (c *Client) View(ctx context.Context, requestID string) (*Request, error) {
 }
 
 func (c *Client) ListRequests(ctx context.Context) ([]Request, error) {
-	var out struct {
-		Requests []Request `json:"requests"`
+	if c.apiKey == "" {
+		return nil, &APIError{Status: 401, Code: "unauthorized", Message: "api key required"}
 	}
-	if err := c.do(ctx, http.MethodGet, "/api/v1/requests", nil, "", &out); err != nil {
-		return nil, err
+	list, _, err := c.api.RequestsAPI.ListRequests(c.auth(ctx)).Execute()
+	if err != nil {
+		return nil, mapAPIError(err)
 	}
-	return out.Requests, nil
+	out := make([]Request, 0, len(list.Requests))
+	for i := range list.Requests {
+		out = append(out, requestFromGenerated(&list.Requests[i]))
+	}
+	return out, nil
 }
 
 func (c *Client) Cancel(ctx context.Context, requestID string) (*Request, error) {
-	var out Request
-	if err := c.do(ctx, http.MethodDelete, "/api/v1/requests/"+url.PathEscape(requestID), nil, "", &out); err != nil {
-		return nil, err
+	if c.apiKey == "" {
+		return nil, &APIError{Status: 401, Code: "unauthorized", Message: "api key required"}
 	}
+	raw, _, err := c.api.RequestsAPI.CancelRequest(c.auth(ctx), requestID).Execute()
+	if err != nil {
+		return nil, mapAPIError(err)
+	}
+	out := requestFromGenerated(raw)
 	return &out, nil
 }
 
 func (c *Client) Credits(ctx context.Context) (*Credits, error) {
-	var out Credits
-	if err := c.do(ctx, http.MethodGet, "/api/v1/credits", nil, "", &out); err != nil {
-		return nil, err
+	if c.apiKey == "" {
+		return nil, &APIError{Status: 401, Code: "unauthorized", Message: "api key required"}
+	}
+	raw, _, err := c.api.CreditsAPI.GetCredits(c.auth(ctx)).Execute()
+	if err != nil {
+		return nil, mapAPIError(err)
+	}
+	out := Credits{}
+	if raw.OrganizationId != nil {
+		out.OrganizationID = *raw.OrganizationId
+	}
+	if raw.Balance != nil {
+		out.Balance = int(*raw.Balance)
 	}
 	return &out, nil
 }
 
 func (c *Client) PresignUpload(ctx context.Context, contentType string) (map[string]any, error) {
+	if c.apiKey == "" {
+		return nil, &APIError{Status: 401, Code: "unauthorized", Message: "api key required"}
+	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	var out map[string]any
-	if err := c.do(ctx, http.MethodPost, "/api/v1/storage/upload-url", map[string]any{
-		"content_type": contentType,
-	}, "", &out); err != nil {
-		return nil, err
+	body := generated.NewPresignUploadBody()
+	body.SetContentType(contentType)
+	raw, _, err := c.api.StorageAPI.PresignUpload(c.auth(ctx)).PresignUploadBody(*body).Execute()
+	if err != nil {
+		return nil, mapAPIError(err)
 	}
-	return out, nil
+	return map[string]any{
+		"key":        raw.Key,
+		"upload_url": raw.UploadUrl,
+		"public_url": raw.PublicUrl,
+	}, nil
 }
 
 // Wait polls View until a terminal status or timeout.
@@ -206,76 +262,98 @@ func (c *Client) Wait(ctx context.Context, requestID string, interval, timeout t
 	}
 }
 
-func escapeModelID(modelID string) string {
-	// model ids are like vesta/face-landmarks — keep slash for chi wildcard routes
-	parts := strings.Split(modelID, "/")
-	for i, p := range parts {
-		parts[i] = url.PathEscape(p)
+func modelFromGenerated(m generated.Model) Model {
+	out := Model{
+		RequiredCapabilities: m.RequiredCapabilities,
 	}
-	return strings.Join(parts, "/")
+	if m.ModelId != nil {
+		out.ModelID = *m.ModelId
+	}
+	if m.Title != nil {
+		out.Title = *m.Title
+	}
+	if m.Category != nil {
+		out.Category = *m.Category
+	}
+	if m.Description != nil {
+		out.Description = *m.Description
+	}
+	if m.SupportsSync != nil {
+		out.SupportsSync = *m.SupportsSync
+	}
+	if m.SupportsAsync != nil {
+		out.SupportsAsync = *m.SupportsAsync
+	}
+	if m.CreditCost != nil {
+		out.CreditCost = int(*m.CreditCost)
+	}
+	return out
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body any, idempotencyKey string, out any) error {
-	if c.apiKey == "" {
-		return &APIError{Status: 401, Code: "unauthorized", Message: "api key required"}
+func requestFromGenerated(r *generated.Request) Request {
+	if r == nil {
+		return Request{}
 	}
-	var reader io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reader = bytes.NewReader(b)
+	out := Request{
+		Output: r.Output,
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
-	if err != nil {
-		return err
+	if r.RequestId != nil {
+		out.RequestID = *r.RequestId
 	}
-	req.Header.Set("Authorization", "Key "+c.apiKey)
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if r.ModelId != nil {
+		out.ModelID = *r.ModelId
 	}
-	if idempotencyKey != "" {
-		req.Header.Set("Idempotency-Key", idempotencyKey)
+	if r.Status != nil {
+		out.Status = *r.Status
 	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
+	if r.Mode != nil {
+		out.Mode = *r.Mode
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return err
+	if r.CreditsReserved != nil {
+		out.CreditsReserved = int(*r.CreditsReserved)
 	}
-	if resp.StatusCode >= 300 {
-		return parseAPIError(resp.StatusCode, raw)
+	if r.Error != nil {
+		out.Error = map[string]any{"code": r.Error.Code, "message": r.Error.Message}
 	}
-	if out == nil || len(raw) == 0 {
+	return out
+}
+
+func mapAPIError(err error) error {
+	if err == nil {
 		return nil
 	}
-	return json.Unmarshal(raw, out)
-}
-
-func parseAPIError(status int, raw []byte) error {
-	var wrap struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+	openErr, ok := err.(*generated.GenericOpenAPIError)
+	if !ok {
+		return err
 	}
-	if err := json.Unmarshal(raw, &wrap); err == nil && (wrap.Error.Code != "" || wrap.Error.Message != "") {
-		msg := wrap.Error.Message
-		if msg == "" {
-			msg = wrap.Error.Code
+	status := 0
+	msg := openErr.Error()
+	code := "http_error"
+	if body := openErr.Body(); len(body) > 0 {
+		var wrap struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
 		}
-		return &APIError{Status: status, Code: wrap.Error.Code, Message: msg}
+		if json.Unmarshal(body, &wrap) == nil && (wrap.Error.Code != "" || wrap.Error.Message != "") {
+			code = wrap.Error.Code
+			msg = wrap.Error.Message
+			if msg == "" {
+				msg = code
+			}
+		}
 	}
-	var legacy struct {
-		Error string `json:"error"`
+	if model, ok := openErr.Model().(generated.ErrorBody); ok && model.Error.Code != "" {
+		code = model.Error.Code
+		msg = model.Error.Message
 	}
-	if err := json.Unmarshal(raw, &legacy); err == nil && legacy.Error != "" {
-		return &APIError{Status: status, Code: legacy.Error, Message: legacy.Error}
+	// Status is embedded in the error string like "401 Unauthorized" for some paths.
+	if len(msg) >= 3 {
+		var n int
+		if _, scanErr := fmt.Sscanf(openErr.Error(), "%d", &n); scanErr == nil {
+			status = n
+		}
 	}
-	return &APIError{Status: status, Code: "http_error", Message: string(raw)}
+	return &APIError{Status: status, Code: code, Message: msg}
 }

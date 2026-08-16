@@ -13,27 +13,30 @@ import (
 
 func TestClientListAndSubmit(t *testing.T) {
 	mux := http.NewServeMux()
+	writeJSON := func(w http.ResponseWriter, status int, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(v)
+	}
 	mux.HandleFunc("/api/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Key vh_test" {
-			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "unauthorized", "message": "unauthorized"}})
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"code": "unauthorized", "message": "unauthorized"}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{{"model_id": "vesta/mock-echo"}}})
+		writeJSON(w, http.StatusOK, map[string]any{"models": []map[string]any{{"model_id": "vesta/mock-echo"}}})
 	})
 	mux.HandleFunc("/api/v1/models/vesta/mock-echo", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "req_1", "status": "queued", "model_id": "vesta/mock-echo"})
+		writeJSON(w, http.StatusAccepted, map[string]any{"request_id": "req_1", "status": "queued", "model_id": "vesta/mock-echo"})
 	})
 	mux.HandleFunc("/api/v1/requests/req_1", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "req_1", "status": "completed", "output": map[string]any{"ok": true}})
+		writeJSON(w, http.StatusOK, map[string]any{"request_id": "req_1", "status": "completed", "output": map[string]any{"ok": true}})
 	})
 	mux.HandleFunc("/api/v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/requests" {
 			http.NotFound(w, r)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"requests": []map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{"requests": []map[string]any{
 			{"request_id": "req_1", "status": "completed"},
 		}})
 	})
